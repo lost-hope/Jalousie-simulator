@@ -1,0 +1,17 @@
+{
+	"version": "2.0.0",
+	"tasks": [
+		{
+			"label": "Build Filesystem",
+			"type": "shell",
+			"command": "platformio.exe",
+			"args": [
+				"run",
+				"--target",
+				"buildfs",
+				"--environment",
+				"esp32dev"
+			]
+		}
+	]
+}
