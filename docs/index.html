@@ -1,0 +1,245 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Jalousie Simulator – Firmware Installer</title>
+<meta name="description" content="ESP32-Firmware für den Jalousie Simulator direkt im Browser installieren.">
+<style>
+  :root {
+    --bg: #f5f6f8;
+    --bg-card: #ffffff;
+    --text: #1a1d23;
+    --text-muted: #5b6270;
+    --accent: #2563eb;
+    --accent-text: #ffffff;
+    --border: #e2e4e9;
+    --code-bg: #eef0f4;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #14161a;
+      --bg-card: #1d2026;
+      --text: #e9eaed;
+      --text-muted: #9aa0ab;
+      --accent: #5b8def;
+      --accent-text: #0b0d10;
+      --border: #2c2f37;
+      --code-bg: #262a32;
+    }
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0;
+    padding: 0;
+    background: var(--bg);
+    color: var(--text);
+    overflow-x: hidden;
+  }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    line-height: 1.55;
+  }
+  .wrap {
+    max-width: 760px;
+    margin: 0 auto;
+    padding: 2.5rem 1.25rem 4rem;
+  }
+  header {
+    text-align: center;
+    margin-bottom: 2.5rem;
+  }
+  header .icon {
+    font-size: 2.75rem;
+    line-height: 1;
+    margin-bottom: 0.5rem;
+  }
+  h1 {
+    font-size: 1.9rem;
+    margin: 0 0 0.4rem;
+    letter-spacing: -0.01em;
+  }
+  header p.tagline {
+    color: var(--text-muted);
+    margin: 0;
+    font-size: 1.05rem;
+  }
+  h2 {
+    font-size: 1.15rem;
+    margin: 0 0 0.75rem;
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+  }
+  .card {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    padding: 1.5rem 1.6rem;
+    margin-bottom: 1.5rem;
+  }
+  .card p:last-child { margin-bottom: 0; }
+  p { color: var(--text); }
+  .muted { color: var(--text-muted); }
+  ul.features {
+    margin: 0;
+    padding-left: 1.2rem;
+  }
+  ul.features li { margin-bottom: 0.4rem; }
+  ul.features li:last-child { margin-bottom: 0; }
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.92rem;
+  }
+  table th, table td {
+    text-align: left;
+    padding: 0.45rem 0.6rem;
+    border-bottom: 1px solid var(--border);
+  }
+  table th {
+    color: var(--text-muted);
+    font-weight: 600;
+    font-size: 0.82rem;
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+  }
+  table tr:last-child td { border-bottom: none; }
+  code {
+    background: var(--code-bg);
+    padding: 0.15rem 0.4rem;
+    border-radius: 5px;
+    font-size: 0.9em;
+  }
+  .install-row {
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+    flex-wrap: wrap;
+  }
+  button#install-btn {
+    background: var(--accent);
+    color: var(--accent-text);
+    border: none;
+    padding: 0.85rem 1.6rem;
+    font-size: 1rem;
+    font-weight: 600;
+    border-radius: 10px;
+    cursor: pointer;
+  }
+  button#install-btn:hover { filter: brightness(1.08); }
+  .note {
+    font-size: 0.88rem;
+    color: var(--text-muted);
+    margin-top: 0.9rem;
+  }
+  .browser-support {
+    display: inline-flex;
+    gap: 0.4rem;
+    align-items: center;
+    font-size: 0.85rem;
+    color: var(--text-muted);
+    margin-top: 0.75rem;
+  }
+  ol.steps {
+    margin: 0.75rem 0 0;
+    padding-left: 1.2rem;
+  }
+  ol.steps li { margin-bottom: 0.3rem; }
+  footer {
+    text-align: center;
+    margin-top: 2.5rem;
+    color: var(--text-muted);
+    font-size: 0.85rem;
+  }
+  footer a { color: var(--accent); text-decoration: none; }
+  footer a:hover { text-decoration: underline; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header>
+    <div class="icon">🪟</div>
+    <h1>Jalousie Simulator</h1>
+    <p class="tagline">ESP32-Firmware direkt im Browser installieren – kein Treiber, keine IDE nötig.</p>
+  </header>
+
+  <div class="card">
+    <h2>📦 Was ist das?</h2>
+    <p>
+      Der <strong>Jalousie Simulator</strong> ist ein ESP32-Projekt, das eine motorisierte
+      Jalousie auf einem TFT-Display nachbildet. Zwei Taster ("Auf" / "Ab") steuern die
+      Animation: Die Jalousie fährt herunter, die Lamellen schließen sich, und beim Hochfahren
+      öffnen sie sich zuerst, bevor die Jalousie wieder hochfährt. Werden beide Taster
+      gleichzeitig gedrückt, simuliert die Firmware einen Fehlerfall ("Kurzschluss") inklusive
+      Warnton.
+    </p>
+    <p>
+      Gedacht ist das Projekt zum Testen von Steuerungslogik und Tasterverdrahtung, ohne dass
+      ein echter Jalousie-Motor angeschlossen sein muss.
+    </p>
+  </div>
+
+  <div class="card">
+    <h2>🔧 Hardware</h2>
+    <ul class="features">
+      <li>ESP32 Dev Board</li>
+      <li>2,4" TFT-Display, ILI9341-Controller, 240×320px, SPI</li>
+      <li>2 Taster gegen Masse (intern Pullup, aktiv Low)</li>
+      <li>Optional: aktiver Buzzer für die Fehlertonfolge</li>
+    </ul>
+    <table style="margin-top:1rem;">
+      <tr><th>Signal</th><th>GPIO</th></tr>
+      <tr><td>TFT MOSI</td><td><code>27</code></td></tr>
+      <tr><td>TFT MISO</td><td><code>14</code></td></tr>
+      <tr><td>TFT SCK</td><td><code>13</code></td></tr>
+      <tr><td>TFT CS</td><td><code>26</code></td></tr>
+      <tr><td>TFT DC</td><td><code>25</code></td></tr>
+      <tr><td>TFT RST</td><td><code>33</code></td></tr>
+      <tr><td>Taster "Ab"</td><td><code>32</code></td></tr>
+      <tr><td>Taster "Auf"</td><td><code>4</code></td></tr>
+      <tr><td>Buzzer</td><td><code>21</code></td></tr>
+    </table>
+  </div>
+
+  <div class="card">
+    <h2>⚡ Firmware installieren</h2>
+    <p>Board per USB anschließen und installieren – läuft komplett im Browser über Web Serial.</p>
+
+    <div class="install-row">
+      <esp-web-install-button manifest="manifest.json">
+        <button id="install-btn" slot="activate">Jetzt installieren</button>
+        <span slot="unsupported">
+          Dein Browser unterstützt Web Serial nicht. Bitte <strong>Chrome</strong> oder
+          <strong>Edge</strong> auf dem Desktop verwenden.
+        </span>
+        <span slot="not-allowed">
+          Web Serial ist nur über HTTPS verfügbar (localhost ausgenommen).
+        </span>
+      </esp-web-install-button>
+    </div>
+
+    <ol class="steps">
+      <li>ESP32 per USB-Kabel mit dem Computer verbinden</li>
+      <li>"Jetzt installieren" klicken und den seriellen Port auswählen</li>
+      <li>Warten, bis der Flash-Vorgang abgeschlossen ist – fertig</li>
+    </ol>
+
+    <p class="note">
+      Funktioniert in Chrome oder Edge auf dem Desktop (Web Serial API). Auf dem Smartphone
+      oder in anderen Browsern (z.&nbsp;B. Firefox, Safari) steht die Installation nicht zur
+      Verfügung.
+    </p>
+  </div>
+
+  <footer>
+    Quellcode auf GitHub · <!-- TODO: Repo-Link hier eintragen, z.B. <a href="https://github.com/DEIN-NAME/jalousie-simulator">github.com/DEIN-NAME/jalousie-simulator</a> -->
+    <span class="muted">Jalousie Simulator</span>
+  </footer>
+
+</div>
+
+<script type="module" src="https://unpkg.com/esp-web-tools@10/dist/web/install-button.js?module"></script>
+</body>
+</html>
