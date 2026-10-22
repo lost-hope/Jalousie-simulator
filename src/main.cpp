@@ -1,6 +1,7 @@
 #include <Adafruit_ILI9341.h>
 #include <Adafruit_GFX.h>
 #include <SPI.h>
+#include <Preferences.h>
 #include "landscape.h"
 #include "Arduino.h"
 
@@ -40,11 +41,23 @@ const int DEBUG_INTERVAL = 200;  // Debug-Ausgabe alle 200ms
 // Animations-Geschwindigkeit: zeitbasiert statt über delay() im loop() gesteuert,
 // damit die Geschwindigkeit nicht von der (vernachlässigbaren) Zeichendauer abhängt.
 const unsigned long FRAME_INTERVAL_MS = 20;   // Taktung ~50 FPS
-const int BLINDS_SPEED_PXPS = 20;            // Jalousie-Geschwindigkeit in Pixel/Sekunde
-const int SLAT_SPEED_SPS = 1;               // Lamellen-Geschwindigkeit in Schritten/Sekunde
-const int BLINDS_STEP_PER_FRAME = max(1, (int)(BLINDS_SPEED_PXPS * FRAME_INTERVAL_MS / 1000));
-const int SLAT_STEP_PER_FRAME = max(1, (int)(SLAT_SPEED_SPS * FRAME_INTERVAL_MS / 1000));
+
+// Fahrzeiten (Sekunden) - über NVS konfigurierbar, siehe loadConfig()/handleConfigCommand().
+// Defaults entsprechen den früheren Compile-Time-Konstanten (20px/s bzw. 1 Schritt/s).
+const float DEFAULT_TRAVEL_SECONDS = blinds_max_height / 20.0f;
+const float DEFAULT_SLAT_SECONDS = MAX_SLAT_OPEN / 1.0f;
+const float TRAVEL_SECONDS_MIN = 1.0f;
+const float TRAVEL_SECONDS_MAX = 120.0f;
+const float SLAT_SECONDS_MIN = 0.5f;
+const float SLAT_SECONDS_MAX = 60.0f;
+
+float travel_seconds = DEFAULT_TRAVEL_SECONDS;
+float slat_seconds = DEFAULT_SLAT_SECONDS;
+int BLINDS_STEP_PER_FRAME = 1;
+int SLAT_STEP_PER_FRAME = 1;
 unsigned long last_frame_time = 0;
+
+Preferences prefs;
 
 // Globaler Zeilenpuffer für drawBitmapRegion (nur 8 Zeilen statt 32 = 3.8KB statt 15KB)
 uint16_t g_line_buffer[240 * 8];
@@ -60,12 +73,17 @@ void openSlats(int step = 1);
 void closeSlats(int step = 1);
 void beepBuzzer(int frequency, int durationMs);
 void alarmtone();
+void loadConfig();
+void applySpeedConfig();
+void handleConfigCommand(String line);
 
 void setup() {
   Serial.begin(115200);
   delay(1000);
   Serial.println("\n\n=== Jalousie Simulator ===");
-  
+
+  loadConfig();
+
   pinMode(PIN_AB, INPUT_PULLUP);
   pinMode(PIN_AUF, INPUT_PULLUP);
   pinMode(PIN_BUZZER, OUTPUT);
@@ -83,6 +101,13 @@ void setup() {
 }
 
 void loop() {
+  // Konfigurations-Befehle über Serial (GET / SET TRAVEL=.. / SET SLAT=..),
+  // z.B. von der Einstellungen-Seite des Web-Installers.
+  while (Serial.available()) {
+    String line = Serial.readStringUntil('\n');
+    handleConfigCommand(line);
+  }
+
   // Debug-Ausgabe drosseln
   unsigned long current_time = millis();
   if (current_time - last_debug_time >= DEBUG_INTERVAL) {
@@ -142,6 +167,103 @@ void alarmtone()
   beepBuzzer(1000, 1000);
   delay(1000);
   beepBuzzer(1000, 1000);
+}
+
+// Berechnet BLINDS_STEP_PER_FRAME / SLAT_STEP_PER_FRAME aus den konfigurierten
+// Fahrzeiten (Sekunden) neu - muss nach jeder Änderung von travel_seconds/slat_seconds
+// aufgerufen werden.
+void applySpeedConfig() {
+  float blinds_pxps = blinds_max_height / travel_seconds;
+  float slat_sps = MAX_SLAT_OPEN / slat_seconds;
+  BLINDS_STEP_PER_FRAME = max(1, (int)round(blinds_pxps * FRAME_INTERVAL_MS / 1000.0f));
+  SLAT_STEP_PER_FRAME = max(1, (int)round(slat_sps * FRAME_INTERVAL_MS / 1000.0f));
+}
+
+// Lädt die Fahrzeiten aus dem NVS (persistiert über SET-Befehle, siehe
+// handleConfigCommand()). Fehlen Werte oder liegen sie außerhalb des gültigen
+// Bereichs, werden die Default-Fahrzeiten verwendet.
+void loadConfig() {
+  prefs.begin("jalousie", true);
+  travel_seconds = prefs.getFloat("travel", DEFAULT_TRAVEL_SECONDS);
+  slat_seconds = prefs.getFloat("slat", DEFAULT_SLAT_SECONDS);
+  prefs.end();
+
+  if (travel_seconds < TRAVEL_SECONDS_MIN || travel_seconds > TRAVEL_SECONDS_MAX) {
+    travel_seconds = DEFAULT_TRAVEL_SECONDS;
+  }
+  if (slat_seconds < SLAT_SECONDS_MIN || slat_seconds > SLAT_SECONDS_MAX) {
+    slat_seconds = DEFAULT_SLAT_SECONDS;
+  }
+  applySpeedConfig();
+}
+
+// Prüft, ob 'value' eine reine positive Dezimalzahl ist (Ziffern, höchstens ein Punkt).
+bool isValidNumber(const String &value) {
+  if (value.length() == 0) return false;
+  bool seenDot = false;
+  for (size_t i = 0; i < value.length(); i++) {
+    char c = value[i];
+    if (c == '.' && !seenDot) {
+      seenDot = true;
+    } else if (!isDigit(c)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+// Serial-Konfigurationsprotokoll für die Einstellungen-Seite des Web-Installers:
+//   GET               -> CFG:TRAVEL=<s>,SLAT=<s>
+//   SET TRAVEL=<s>    -> CFG:OK TRAVEL=<s>  oder  CFG:ERR TRAVEL
+//   SET SLAT=<s>      -> CFG:OK SLAT=<s>    oder  CFG:ERR SLAT
+// Ungültige Eingaben (keine Zahl, außerhalb des gültigen Bereichs) werden
+// abgelehnt und der bisherige Wert bleibt unverändert.
+void handleConfigCommand(String line) {
+  line.trim();
+  if (line.length() == 0) return;
+
+  if (line == "GET") {
+    Serial.print("CFG:TRAVEL=");
+    Serial.print(travel_seconds, 2);
+    Serial.print(",SLAT=");
+    Serial.println(slat_seconds, 2);
+    return;
+  }
+
+  bool isTravel = line.startsWith("SET TRAVEL=");
+  bool isSlat = line.startsWith("SET SLAT=");
+  if (!isTravel && !isSlat) {
+    Serial.println("CFG:ERR UNKNOWN_COMMAND");
+    return;
+  }
+
+  String valueStr = line.substring(line.indexOf('=') + 1);
+  valueStr.trim();
+
+  float minV = isTravel ? TRAVEL_SECONDS_MIN : SLAT_SECONDS_MIN;
+  float maxV = isTravel ? TRAVEL_SECONDS_MAX : SLAT_SECONDS_MAX;
+  float value = isValidNumber(valueStr) ? valueStr.toFloat() : -1.0f;
+
+  if (value < minV || value > maxV) {
+    Serial.print("CFG:ERR ");
+    Serial.println(isTravel ? "TRAVEL" : "SLAT");
+    return;
+  }
+
+  if (isTravel) {
+    travel_seconds = value;
+  } else {
+    slat_seconds = value;
+  }
+  applySpeedConfig();
+
+  prefs.begin("jalousie", false);
+  prefs.putFloat(isTravel ? "travel" : "slat", value);
+  prefs.end();
+
+  Serial.print("CFG:OK ");
+  Serial.print(isTravel ? "TRAVEL=" : "SLAT=");
+  Serial.println(value, 2);
 }
 void drawScreen() {
   int transparent_height = TRANSPARENT_HEIGHT + slat_open;

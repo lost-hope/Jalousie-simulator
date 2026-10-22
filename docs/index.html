@@ -128,6 +128,46 @@
     cursor: pointer;
   }
   button#install-btn:hover { filter: brightness(1.08); }
+  .btn-secondary {
+    background: var(--code-bg);
+    color: var(--text);
+    border: 1px solid var(--border);
+    padding: 0.6rem 1.1rem;
+    font-size: 0.92rem;
+    font-weight: 600;
+    border-radius: 9px;
+    cursor: pointer;
+  }
+  .btn-secondary:hover:not(:disabled) { filter: brightness(1.05); }
+  .btn-secondary:disabled { opacity: 0.5; cursor: not-allowed; }
+  .cfg-fields {
+    display: flex;
+    gap: 1.5rem;
+    flex-wrap: wrap;
+    margin-top: 1.1rem;
+  }
+  .cfg-fields label {
+    display: flex;
+    flex-direction: column;
+    gap: 0.4rem;
+    font-size: 0.88rem;
+    color: var(--text-muted);
+    flex: 1 1 200px;
+  }
+  .cfg-fields input[type="number"] {
+    font-size: 1rem;
+    padding: 0.55rem 0.7rem;
+    border-radius: 8px;
+    border: 1px solid var(--border);
+    background: var(--bg);
+    color: var(--text);
+  }
+  .cfg-fields input[type="number"]:disabled { opacity: 0.5; }
+  #cfg-status {
+    font-size: 0.9rem;
+  }
+  #cfg-status.ok { color: #1a9d57; }
+  #cfg-status.error { color: #d6453d; }
   .note {
     font-size: 0.88rem;
     color: var(--text-muted);
@@ -233,6 +273,46 @@
     </p>
   </div>
 
+  <div class="card">
+    <h2>⏱️ Einstellungen</h2>
+    <p>Fahrzeiten direkt auf dem Board anpassen – kein Neuflashen nötig.</p>
+
+    <div id="cfg-unsupported" style="display:none;">
+      <p class="note">
+        Dein Browser unterstützt Web Serial nicht. Bitte <strong>Chrome</strong> oder
+        <strong>Edge</strong> auf dem Desktop verwenden.
+      </p>
+    </div>
+
+    <div id="cfg-ui">
+      <div class="install-row">
+        <button id="cfg-connect-btn" class="btn-secondary">Mit Board verbinden</button>
+        <span id="cfg-status" class="muted"></span>
+      </div>
+
+      <div class="cfg-fields">
+        <label>
+          Fahrzeit in Sekunden (komplett rauf/runter)
+          <input type="number" id="cfg-travel" min="1" max="120" step="0.5" disabled>
+        </label>
+        <label>
+          Lamellenzeit in Sekunden (komplett auf/zu)
+          <input type="number" id="cfg-slat" min="0.5" max="60" step="0.5" disabled>
+        </label>
+      </div>
+
+      <div class="install-row" style="margin-top:0.9rem;">
+        <button id="cfg-read-btn" class="btn-secondary" disabled>Werte auslesen</button>
+        <button id="cfg-save-btn" class="btn-secondary" disabled>Speichern</button>
+      </div>
+
+      <p class="note">
+        Ungültige Werte (keine Zahl oder außerhalb des gültigen Bereichs) werden vom Board
+        abgelehnt – der bisherige Wert bleibt dann unverändert.
+      </p>
+    </div>
+  </div>
+
   <footer>
     Quellcode auf GitHub · <!-- TODO: Repo-Link hier eintragen, z.B. <a href="https://github.com/DEIN-NAME/jalousie-simulator">github.com/DEIN-NAME/jalousie-simulator</a> -->
     <span class="muted">Jalousie Simulator</span>
@@ -241,5 +321,143 @@
 </div>
 
 <script type="module" src="https://unpkg.com/esp-web-tools@10/dist/web/install-button.js?module"></script>
+
+<script>
+(function () {
+  const connectBtn = document.getElementById('cfg-connect-btn');
+  const readBtn = document.getElementById('cfg-read-btn');
+  const saveBtn = document.getElementById('cfg-save-btn');
+  const travelInput = document.getElementById('cfg-travel');
+  const slatInput = document.getElementById('cfg-slat');
+  const statusEl = document.getElementById('cfg-status');
+
+  if (!('serial' in navigator)) {
+    document.getElementById('cfg-unsupported').style.display = 'block';
+    document.getElementById('cfg-ui').style.display = 'none';
+    return;
+  }
+
+  let port = null;
+  let writer = null;
+  let lineBuffer = '';
+  let pendingResolvers = [];
+
+  function setStatus(text, kind) {
+    statusEl.textContent = text;
+    statusEl.classList.remove('ok', 'error');
+    if (kind) statusEl.classList.add(kind);
+  }
+
+  function waitForCfgLine(timeoutMs) {
+    return new Promise((resolve, reject) => {
+      const entry = { resolve: null };
+      const timer = setTimeout(() => {
+        const i = pendingResolvers.indexOf(entry);
+        if (i >= 0) pendingResolvers.splice(i, 1);
+        reject(new Error('Keine Antwort vom Board (Timeout).'));
+      }, timeoutMs || 2000);
+      entry.resolve = (line) => {
+        clearTimeout(timer);
+        resolve(line);
+      };
+      pendingResolvers.push(entry);
+    });
+  }
+
+  async function sendCommand(cmd) {
+    await writer.write(new TextEncoder().encode(cmd + '\n'));
+    return waitForCfgLine();
+  }
+
+  async function readLoop() {
+    const decoder = new TextDecoderStream();
+    port.readable.pipeTo(decoder.writable).catch(() => {});
+    const reader = decoder.readable.getReader();
+    try {
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        lineBuffer += value;
+        let idx;
+        while ((idx = lineBuffer.indexOf('\n')) >= 0) {
+          const line = lineBuffer.slice(0, idx).trim();
+          lineBuffer = lineBuffer.slice(idx + 1);
+          if (line.startsWith('CFG:') && pendingResolvers.length > 0) {
+            pendingResolvers.shift().resolve(line);
+          }
+        }
+      }
+    } catch (e) {
+      // Port wurde getrennt/geschlossen
+    }
+  }
+
+  async function parseAndFillValues(line) {
+    const match = line.match(/TRAVEL=([\d.]+),SLAT=([\d.]+)/);
+    if (!match) {
+      setStatus('Unerwartete Antwort vom Board: ' + line, 'error');
+      return;
+    }
+    travelInput.value = match[1];
+    slatInput.value = match[2];
+  }
+
+  connectBtn.addEventListener('click', async () => {
+    try {
+      port = await navigator.serial.requestPort();
+      await port.open({ baudRate: 115200 });
+      writer = port.writable.getWriter();
+      readLoop();
+
+      connectBtn.disabled = true;
+      readBtn.disabled = false;
+      saveBtn.disabled = false;
+      travelInput.disabled = false;
+      slatInput.disabled = false;
+      setStatus('Verbunden.', 'ok');
+
+      const line = await sendCommand('GET');
+      await parseAndFillValues(line);
+    } catch (e) {
+      setStatus('Verbindung fehlgeschlagen: ' + e.message, 'error');
+    }
+  });
+
+  readBtn.addEventListener('click', async () => {
+    try {
+      setStatus('Lese Werte...');
+      const line = await sendCommand('GET');
+      await parseAndFillValues(line);
+      setStatus('Aktuelle Werte geladen.', 'ok');
+    } catch (e) {
+      setStatus(e.message, 'error');
+    }
+  });
+
+  saveBtn.addEventListener('click', async () => {
+    try {
+      setStatus('Speichere...');
+      const travelResp = await sendCommand('SET TRAVEL=' + travelInput.value);
+      const slatResp = await sendCommand('SET SLAT=' + slatInput.value);
+      const travelOk = travelResp.startsWith('CFG:OK');
+      const slatOk = slatResp.startsWith('CFG:OK');
+
+      if (travelOk && slatOk) {
+        setStatus('Gespeichert.', 'ok');
+      } else {
+        const rejected = [];
+        if (!travelOk) rejected.push('Fahrzeit');
+        if (!slatOk) rejected.push('Lamellenzeit');
+        setStatus('Abgelehnt (ungültiger Wert, alter Wert bleibt): ' + rejected.join(', '), 'error');
+        // Zeigt wieder die tatsächlich gespeicherten Werte an, falls einer abgelehnt wurde
+        const line = await sendCommand('GET');
+        await parseAndFillValues(line);
+      }
+    } catch (e) {
+      setStatus(e.message, 'error');
+    }
+  });
+})();
+</script>
 </body>
 </html>
