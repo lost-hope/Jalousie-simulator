@@ -154,7 +154,8 @@
     color: var(--text-muted);
     flex: 1 1 200px;
   }
-  .cfg-fields input[type="number"] {
+  .cfg-fields input[type="number"],
+  .cfg-fields select {
     font-size: 1rem;
     padding: 0.55rem 0.7rem;
     border-radius: 8px;
@@ -162,7 +163,8 @@
     background: var(--bg);
     color: var(--text);
   }
-  .cfg-fields input[type="number"]:disabled { opacity: 0.5; }
+  .cfg-fields input[type="number"]:disabled,
+  .cfg-fields select:disabled { opacity: 0.5; }
   #cfg-status {
     font-size: 0.9rem;
   }
@@ -299,6 +301,13 @@
           Lamellenzeit in Sekunden (komplett auf/zu)
           <input type="number" id="cfg-slat" min="0.5" max="60" step="0.5" disabled>
         </label>
+        <label>
+          Display-Ausrichtung
+          <select id="cfg-rotation" disabled>
+            <option value="2">Standard</option>
+            <option value="0">180° gedreht (Überkopf-Montage)</option>
+          </select>
+        </label>
       </div>
 
       <div class="install-row" style="margin-top:0.9rem;">
@@ -329,6 +338,7 @@
   const saveBtn = document.getElementById('cfg-save-btn');
   const travelInput = document.getElementById('cfg-travel');
   const slatInput = document.getElementById('cfg-slat');
+  const rotationSelect = document.getElementById('cfg-rotation');
   const statusEl = document.getElementById('cfg-status');
 
   if (!('serial' in navigator)) {
@@ -393,13 +403,14 @@
   }
 
   async function parseAndFillValues(line) {
-    const match = line.match(/TRAVEL=([\d.]+),SLAT=([\d.]+)/);
+    const match = line.match(/TRAVEL=([\d.]+),SLAT=([\d.]+),ROTATION=([02])/);
     if (!match) {
       setStatus('Unerwartete Antwort vom Board: ' + line, 'error');
       return;
     }
     travelInput.value = match[1];
     slatInput.value = match[2];
+    rotationSelect.value = match[3];
   }
 
   connectBtn.addEventListener('click', async () => {
@@ -414,6 +425,7 @@
       saveBtn.disabled = false;
       travelInput.disabled = false;
       slatInput.disabled = false;
+      rotationSelect.disabled = false;
       setStatus('Verbunden.', 'ok');
 
       const line = await sendCommand('GET');
@@ -439,15 +451,18 @@
       setStatus('Speichere...');
       const travelResp = await sendCommand('SET TRAVEL=' + travelInput.value);
       const slatResp = await sendCommand('SET SLAT=' + slatInput.value);
+      const rotationResp = await sendCommand('SET ROTATION=' + rotationSelect.value);
       const travelOk = travelResp.startsWith('CFG:OK');
       const slatOk = slatResp.startsWith('CFG:OK');
+      const rotationOk = rotationResp.startsWith('CFG:OK');
 
-      if (travelOk && slatOk) {
+      if (travelOk && slatOk && rotationOk) {
         setStatus('Gespeichert.', 'ok');
       } else {
         const rejected = [];
         if (!travelOk) rejected.push('Fahrzeit');
         if (!slatOk) rejected.push('Lamellenzeit');
+        if (!rotationOk) rejected.push('Ausrichtung');
         setStatus('Abgelehnt (ungültiger Wert, alter Wert bleibt): ' + rejected.join(', '), 'error');
         // Zeigt wieder die tatsächlich gespeicherten Werte an, falls einer abgelehnt wurde
         const line = await sendCommand('GET');

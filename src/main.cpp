@@ -51,10 +51,23 @@ const float TRAVEL_SECONDS_MAX = 120.0f;
 const float SLAT_SECONDS_MIN = 0.5f;
 const float SLAT_SECONDS_MAX = 60.0f;
 
+// Display-Rotation - nur 0 oder 2 zulässig (180°-Flip für Überkopf-Montage),
+// da Hintergrundbild und Jalousie-Höhenlogik fest auf das 240x320-Hochformat
+// ausgelegt sind. 1/3 (Querformat) würden beides unbrauchbar machen.
+const int DEFAULT_ROTATION = 2;
+int display_rotation = DEFAULT_ROTATION;
+
 float travel_seconds = DEFAULT_TRAVEL_SECONDS;
 float slat_seconds = DEFAULT_SLAT_SECONDS;
-int BLINDS_STEP_PER_FRAME = 1;
-int SLAT_STEP_PER_FRAME = 1;
+
+// Sub-Pixel-Akkumulatoren: pro Frame wird ein ggf. gebrochener Betrag (< 1px/Schritt)
+// aufaddiert, ein ganzzahliger Schritt wird erst ausgeführt, wenn genug angesammelt
+// wurde. So bleiben auch sehr langsame Fahrzeiten (hohe Sekundenwerte) exakt abbildbar,
+// statt auf eine Mindestgeschwindigkeit von 1px/Frame aufgerundet zu werden.
+float blinds_px_per_frame = 0;
+float slat_steps_per_frame = 0;
+float blinds_accum = 0;
+float slat_accum = 0;
 unsigned long last_frame_time = 0;
 
 Preferences prefs;
@@ -76,6 +89,7 @@ void alarmtone();
 void loadConfig();
 void applySpeedConfig();
 void handleConfigCommand(String line);
+int takeSteps(float &accumulator, float incrementPerFrame);
 
 void setup() {
   Serial.begin(115200);
@@ -94,7 +108,7 @@ void setup() {
   Serial.println("Initializing display...");
   SPI.begin(TFT_SCLK, TFT_MISO, TFT_MOSI, TFT_CS);
   tft.begin(80000000);  // Max SPI-Speed für ESP32 (über GPIO-Matrix geroutet)
-  tft.setRotation(2);
+  tft.setRotation(display_rotation);
 
   // Hintergrundbild laden
   loadBackgroundImage();
@@ -123,8 +137,8 @@ void loop() {
     last_debug_time = current_time;
   }
 
-  // Nicht-blockierende Taktung: Animationsgeschwindigkeit wird über
-  // BLINDS_STEP_PER_FRAME / SLAT_STEP_PER_FRAME geregelt, nicht über delay().
+  // Nicht-blockierende Taktung: Animationsgeschwindigkeit wird über die
+  // Sub-Pixel-Akkumulatoren (takeSteps()) geregelt, nicht über delay().
   if (current_time - last_frame_time < FRAME_INTERVAL_MS) {
     return;
   }
@@ -147,16 +161,25 @@ void loop() {
     loadBackgroundImage();  // Hintergrund wiederherstellen
   }else if (!digitalRead(PIN_AUF)) {
     if (slat_open < MAX_SLAT_OPEN) {
-      openSlats(SLAT_STEP_PER_FRAME);
+      int steps = takeSteps(slat_accum, slat_steps_per_frame);
+      if (steps > 0) openSlats(steps);
     } else if (blinds_height > 0) {
-      raiseBlinds(BLINDS_STEP_PER_FRAME);
+      int steps = takeSteps(blinds_accum, blinds_px_per_frame);
+      if (steps > 0) raiseBlinds(steps);
     }
   }else if (!digitalRead(PIN_AB)) {
     if (slat_open > 0) {
-      closeSlats(SLAT_STEP_PER_FRAME);
+      int steps = takeSteps(slat_accum, slat_steps_per_frame);
+      if (steps > 0) closeSlats(steps);
     } else if (blinds_height < blinds_max_height) {
-      lowerBlinds(BLINDS_STEP_PER_FRAME);
+      int steps = takeSteps(blinds_accum, blinds_px_per_frame);
+      if (steps > 0) lowerBlinds(steps);
     }
+  } else {
+    // Keine Taste gedrückt - Akkumulatoren zurücksetzen, damit der nächste
+    // Tastendruck nicht von angesammeltem Rest aus einer anderen Bewegung springt.
+    blinds_accum = 0;
+    slat_accum = 0;
   }
 }
 
@@ -169,14 +192,26 @@ void alarmtone()
   beepBuzzer(1000, 1000);
 }
 
-// Berechnet BLINDS_STEP_PER_FRAME / SLAT_STEP_PER_FRAME aus den konfigurierten
-// Fahrzeiten (Sekunden) neu - muss nach jeder Änderung von travel_seconds/slat_seconds
-// aufgerufen werden.
+// Berechnet blinds_px_per_frame / slat_steps_per_frame (Fließkomma, kann < 1 sein)
+// aus den konfigurierten Fahrzeiten (Sekunden) neu - muss nach jeder Änderung von
+// travel_seconds/slat_seconds aufgerufen werden.
 void applySpeedConfig() {
   float blinds_pxps = blinds_max_height / travel_seconds;
   float slat_sps = MAX_SLAT_OPEN / slat_seconds;
-  BLINDS_STEP_PER_FRAME = max(1, (int)round(blinds_pxps * FRAME_INTERVAL_MS / 1000.0f));
-  SLAT_STEP_PER_FRAME = max(1, (int)round(slat_sps * FRAME_INTERVAL_MS / 1000.0f));
+  blinds_px_per_frame = blinds_pxps * FRAME_INTERVAL_MS / 1000.0f;
+  slat_steps_per_frame = slat_sps * FRAME_INTERVAL_MS / 1000.0f;
+}
+
+// Addiert 'incrementPerFrame' (kann < 1 sein) zum Akkumulator und gibt die Anzahl
+// ganzer Schritte zurück, die diesen Frame ausgeführt werden sollen (0, wenn noch
+// nicht genug angesammelt wurde). Der ausgeschüttete Anteil wird abgezogen, der Rest
+// bleibt für die folgenden Frames erhalten.
+int takeSteps(float &accumulator, float incrementPerFrame) {
+  accumulator += incrementPerFrame;
+  int steps = (int)accumulator;
+  if (steps < 1) return 0;
+  accumulator -= steps;
+  return steps;
 }
 
 // Lädt die Fahrzeiten aus dem NVS (persistiert über SET-Befehle, siehe
@@ -186,6 +221,7 @@ void loadConfig() {
   prefs.begin("jalousie", true);
   travel_seconds = prefs.getFloat("travel", DEFAULT_TRAVEL_SECONDS);
   slat_seconds = prefs.getFloat("slat", DEFAULT_SLAT_SECONDS);
+  display_rotation = prefs.getInt("rotation", DEFAULT_ROTATION);
   prefs.end();
 
   if (travel_seconds < TRAVEL_SECONDS_MIN || travel_seconds > TRAVEL_SECONDS_MAX) {
@@ -193,6 +229,9 @@ void loadConfig() {
   }
   if (slat_seconds < SLAT_SECONDS_MIN || slat_seconds > SLAT_SECONDS_MAX) {
     slat_seconds = DEFAULT_SLAT_SECONDS;
+  }
+  if (display_rotation != 0 && display_rotation != 2) {
+    display_rotation = DEFAULT_ROTATION;
   }
   applySpeedConfig();
 }
@@ -213,11 +252,12 @@ bool isValidNumber(const String &value) {
 }
 
 // Serial-Konfigurationsprotokoll für die Einstellungen-Seite des Web-Installers:
-//   GET               -> CFG:TRAVEL=<s>,SLAT=<s>
-//   SET TRAVEL=<s>    -> CFG:OK TRAVEL=<s>  oder  CFG:ERR TRAVEL
-//   SET SLAT=<s>      -> CFG:OK SLAT=<s>    oder  CFG:ERR SLAT
-// Ungültige Eingaben (keine Zahl, außerhalb des gültigen Bereichs) werden
-// abgelehnt und der bisherige Wert bleibt unverändert.
+//   GET               -> CFG:TRAVEL=<s>,SLAT=<s>,ROTATION=<0|2>
+//   SET TRAVEL=<s>    -> CFG:OK TRAVEL=<s>    oder  CFG:ERR TRAVEL
+//   SET SLAT=<s>      -> CFG:OK SLAT=<s>      oder  CFG:ERR SLAT
+//   SET ROTATION=<r>  -> CFG:OK ROTATION=<r>  oder  CFG:ERR ROTATION
+// Ungültige Eingaben (keine Zahl, außerhalb des gültigen Bereichs, bei ROTATION
+// alles außer 0/2) werden abgelehnt und der bisherige Wert bleibt unverändert.
 void handleConfigCommand(String line) {
   line.trim();
   if (line.length() == 0) return;
@@ -226,7 +266,40 @@ void handleConfigCommand(String line) {
     Serial.print("CFG:TRAVEL=");
     Serial.print(travel_seconds, 2);
     Serial.print(",SLAT=");
-    Serial.println(slat_seconds, 2);
+    Serial.print(slat_seconds, 2);
+    Serial.print(",ROTATION=");
+    Serial.println(display_rotation);
+    return;
+  }
+
+  if (line.startsWith("SET ROTATION=")) {
+    String valueStr = line.substring(line.indexOf('=') + 1);
+    valueStr.trim();
+
+    if ((valueStr != "0" && valueStr != "2")) {
+      Serial.println("CFG:ERR ROTATION");
+      return;
+    }
+
+    int newRotation = valueStr.toInt();
+    if (newRotation != display_rotation) {
+      display_rotation = newRotation;
+      tft.setRotation(display_rotation);
+      // Rotation ändert die Pixel-Adressierung - Anzeige muss komplett neu
+      // aufgebaut werden, der bisherige Inhalt passt nicht mehr.
+      blinds_height = 0;
+      blinds_height_prev = 0;
+      slat_open = 0;
+      slat_open_prev = 0;
+      loadBackgroundImage();
+
+      prefs.begin("jalousie", false);
+      prefs.putInt("rotation", display_rotation);
+      prefs.end();
+    }
+
+    Serial.print("CFG:OK ROTATION=");
+    Serial.println(display_rotation);
     return;
   }
 
